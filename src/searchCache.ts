@@ -8,10 +8,13 @@ function abortedError(signal: AbortSignal): unknown {
   );
 }
 
-function withCallerSignal<T>(
-  shared: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
+interface InFlightRequest {
+  controller: AbortController;
+  subscribers: number;
+  promise: Promise<Country[]>;
+}
+
+function withSignal<T>(shared: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
     return Promise.reject(abortedError(signal));
   }
@@ -47,7 +50,7 @@ export function createSearchCache(
   search: SearchFn = searchCountries,
 ): SearchFn {
   const cache = new Map<string, Country[]>();
-  const inflight = new Map<string, Promise<Country[]>>();
+  const inflight = new Map<string, InFlightRequest>();
 
   return (query, signal) => {
     if (signal.aborted) {
@@ -56,25 +59,57 @@ export function createSearchCache(
 
     const cached = cache.get(query);
     if (cached !== undefined) {
-      return withCallerSignal(Promise.resolve(cached), signal);
+      return withSignal(Promise.resolve(cached), signal);
     }
 
-    let shared = inflight.get(query);
-    if (!shared) {
-      shared = search(query, new AbortController().signal).then(
+    let request = inflight.get(query);
+    if (!request) {
+      const controller = new AbortController();
+      request = {
+        controller,
+        subscribers: 0,
+        promise: Promise.resolve([]),
+      };
+      inflight.set(query, request);
+
+      let pending: Promise<Country[]>;
+      try {
+        pending = search(query, controller.signal);
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+
+      const currentRequest = request;
+      request.promise = pending.then(
         (countries) => {
-          inflight.delete(query);
-          cache.set(query, countries);
+          const activeRequest = inflight.get(query);
+          if (activeRequest === currentRequest || activeRequest === undefined) {
+            inflight.delete(query);
+            cache.set(query, countries);
+          }
           return countries;
         },
         (error: unknown) => {
-          inflight.delete(query);
+          if (inflight.get(query) === currentRequest) {
+            inflight.delete(query);
+          }
           throw error;
         },
       );
-      inflight.set(query, shared);
     }
 
-    return withCallerSignal(shared, signal);
+    const currentRequest = request;
+    currentRequest.subscribers += 1;
+
+    return withSignal(currentRequest.promise, signal).finally(() => {
+      currentRequest.subscribers -= 1;
+      if (
+        currentRequest.subscribers === 0 &&
+        inflight.get(query) === currentRequest
+      ) {
+        inflight.delete(query);
+        currentRequest.controller.abort();
+      }
+    });
   };
 }

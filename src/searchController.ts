@@ -29,6 +29,7 @@ export interface SearchControllerOptions {
 
 export interface SearchController {
   setQuery: (raw: string) => void;
+  searchNow: (raw: string) => void;
   retry: () => void;
   selectCountry: (code: string) => void;
   getState: () => SearchViewState;
@@ -99,6 +100,7 @@ export function createSearchController(
     abortCurrent();
 
     if (query === '') {
+      scheduleSearch.cancel();
       setState({ status: 'idle' });
       return;
     }
@@ -107,10 +109,26 @@ export function createSearchController(
     scheduleSearch();
   }
 
+  function searchNow(raw: string): void {
+    const query = raw.trim();
+    lastQuery = query;
+    selected = null;
+    abortCurrent();
+    scheduleSearch.cancel();
+
+    if (query === '') {
+      setState({ status: 'idle' });
+      return;
+    }
+
+    void runSearch(query);
+  }
+
   function retry(): void {
     if (lastQuery === '') {
       return;
     }
+    scheduleSearch.cancel();
     abortCurrent();
     void runSearch(lastQuery);
   }
@@ -127,6 +145,7 @@ export function createSearchController(
 
   return {
     setQuery,
+    searchNow,
     retry,
     selectCountry,
     getState: () => state,
