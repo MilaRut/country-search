@@ -355,3 +355,91 @@ describe('createSearchController', () => {
     expect(controller.getSelected()).toBeNull();
   });
 });
+
+function queryFromUrl(input: RequestInfo | URL): string {
+  const url = String(input);
+  return decodeURIComponent(url.slice(url.lastIndexOf('/') + 1));
+}
+
+function createAbortAwareFetch() {
+  const resolvers = new Map<
+    string,
+    { resolve: (response: Response) => void; signal: AbortSignal }
+  >();
+
+  const fetchMock = vi.fn(
+    (input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal;
+        const fail = (): void => {
+          reject(
+            signal?.reason ??
+              new DOMException('The operation was aborted', 'AbortError'),
+          );
+        };
+
+        if (!signal) {
+          return;
+        }
+        if (signal.aborted) {
+          fail();
+          return;
+        }
+
+        signal.addEventListener('abort', fail, { once: true });
+        resolvers.set(queryFromUrl(input), { resolve, signal });
+      }),
+  );
+
+  function resolveQuery(query: string, body: unknown, status = 200): boolean {
+    const pending = resolvers.get(query);
+    if (!pending || pending.signal.aborted) {
+      return false;
+    }
+    pending.resolve(new Response(JSON.stringify(body), { status }));
+    return true;
+  }
+
+  return { fetchMock, resolveQuery };
+}
+
+describe('request race', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('keeps only the latest query when an older response would arrive later', async () => {
+    const { fetchMock, resolveQuery } = createAbortAwareFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = createSearchController({ delay: 300 });
+
+    controller.setQuery('sp');
+    await vi.advanceTimersByTimeAsync(300);
+    const staleRequest = fetchMock.mock.results[0]?.value as Promise<Response>;
+    const staleSignal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal;
+
+    controller.setQuery('spain');
+    await Promise.resolve();
+
+    expect(staleSignal.aborted).toBe(true);
+    await expect(staleRequest).rejects.toMatchObject({ name: 'AbortError' });
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(resolveQuery('spain', spainJson)).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(resolveQuery('sp', unitedJson)).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(controller.getState()).toEqual({
+      status: 'results',
+      query: 'spain',
+      countries: spain,
+    });
+  });
+});
