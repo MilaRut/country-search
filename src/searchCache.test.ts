@@ -3,6 +3,7 @@ import spainJson from './fixtures/spain.json' with { type: 'json' };
 import unitedJson from './fixtures/united.json' with { type: 'json' };
 import { mapCountryResponse } from './mapCountryResponse.js';
 import { createSearchCache } from './searchCache.js';
+import type { SearchFn } from './searchController.js';
 import type { Country } from './types.js';
 
 const spain = mapCountryResponse(spainJson);
@@ -20,7 +21,7 @@ function deferred<T>() {
 
 function createSearchMock() {
   const pending = deferred<Country[]>();
-  const search = vi.fn(() => pending.promise);
+  const search = vi.fn<SearchFn>(() => pending.promise);
   return { search, pending };
 }
 
@@ -79,6 +80,35 @@ describe('createSearchCache', () => {
     await expect(first).rejects.toMatchObject({ name: 'AbortError' });
     await expect(second).resolves.toEqual(spain);
     expect(search.mock.calls[0]?.[1].aborted).toBe(false);
+  });
+
+  it('aborts an in-flight request when every caller cancels', async () => {
+    let calls = 0;
+    const search = vi.fn<SearchFn>((_query, signal) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      }
+      return Promise.resolve(spain);
+    });
+    const cached = createSearchCache(search);
+    const controller = new AbortController();
+
+    const first = cached('spain', controller.signal);
+    const requestSignal = search.mock.calls[0]?.[1];
+    controller.abort();
+
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requestSignal?.aborted).toBe(true);
+
+    await expect(
+      cached('spain', new AbortController().signal),
+    ).resolves.toEqual(spain);
+    expect(search).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a caller whose signal is already aborted without starting a search', async () => {

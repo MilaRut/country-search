@@ -117,6 +117,20 @@ describe('createSearchController', () => {
     expect(search).toHaveBeenCalledWith('spain', expect.any(AbortSignal));
   });
 
+  it('runs a history query immediately and cancels pending debounce', async () => {
+    const { search } = createSearchMock();
+    const controller = createSearchController({ search, delay: 300 });
+
+    controller.setQuery('sp');
+    controller.searchNow('spain');
+
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith('spain', expect.any(AbortSignal));
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
   it('shows loading as soon as the user types a non-empty query', () => {
     const { search } = createSearchMock();
     const controller = createSearchController({ search, delay: 300 });

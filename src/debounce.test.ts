@@ -65,6 +65,17 @@ describe('debounce', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it('cancels a pending call', () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 300);
+
+    debounced('spain');
+    debounced.cancel();
+    vi.advanceTimersByTime(300);
+
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('passes the arguments of the last call', () => {
     const fn = vi.fn();
     const debounced = debounce(fn, 300);
